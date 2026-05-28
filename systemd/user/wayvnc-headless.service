@@ -1,0 +1,13 @@
+[Unit]
+Description=Persistent Hyprland headless output for wayvnc
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-%h/.config/hypr-wayvnc-virtual-display/config
+ExecStart=@BINDIR@/wayvnc-headless
+
+[Install]
+WantedBy=graphical-session.target

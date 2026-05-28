@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# wayvnc-output-pin: keep wayvnc attached and capturing a named Hyprland
+# output across monitor hotplug events.
+#
+# Hyprland destroys and recreates a monitor's wl_output global whenever it
+# enters or leaves mirror mode. wayvnc tracks outputs by registry id, so it
+# loses its capture target on every mirror transition: it falls back to a
+# wrong output or detaches entirely.
+#
+# This service watches Hyprland's socket2 for monitor add/remove events and
+# re-issues `wayvncctl attach $WAYLAND_DISPLAY` + `output-set $HEADLESS_NAME`
+# after a short debounce, so wayvnc settles back on the intended output.
+#
+# Requires wayvnc to be started with `--detached`.
+#
+# Env:
+#   HEADLESS_NAME    default: HEADLESS-1
+#   WAYLAND_DISPLAY  required (inherited from session)
+#   HYPRLAND_INSTANCE_SIGNATURE  required (inherited from session)
+#   XDG_RUNTIME_DIR  required (inherited from session)
+
+set -eu
+
+: "${HEADLESS_NAME:=HEADLESS-1}"
+
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  echo "wayvnc-output-pin: WAYLAND_DISPLAY is not set" >&2
+  exit 1
+fi
+if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
+  echo "wayvnc-output-pin: HYPRLAND_INSTANCE_SIGNATURE is not set" >&2
+  exit 1
+fi
+
+pin() {
+  # attach is a no-op (and errors) if wayvnc is already attached; output-set
+  # is what actually re-pins after Hyprland recreates the wl_output global.
+  wayvncctl attach "$WAYLAND_DISPLAY" >/dev/null 2>&1 || true
+  sleep 0.2
+  wayvncctl output-set "$HEADLESS_NAME" >/dev/null 2>&1 || true
+}
+
+# Wait for the wayvnc control socket to appear.
+for _ in $(seq 1 30); do
+  wayvncctl --json get-clients >/dev/null 2>&1 && break
+  sleep 1
+done
+
+pin
+
+hypr_sock="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+if [ ! -S "$hypr_sock" ]; then
+  echo "wayvnc-output-pin: Hyprland socket2 not found at $hypr_sock" >&2
+  exit 1
+fi
+
+socat -U - "UNIX-CONNECT:$hypr_sock" | while IFS= read -r evt; do
+  case "$evt" in
+    monitoraddedv2*|monitorremovedv2*)
+      # Debounce: let Hyprland finish recreating the wl_output global before
+      # we re-issue output-set.
+      sleep 0.3
+      pin
+      ;;
+  esac
+done

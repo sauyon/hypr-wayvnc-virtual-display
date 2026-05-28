@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# wayvnc-headless: create or refresh a persistent Hyprland headless output.
+#
+# Hyprland's `hyprctl output create headless` auto-assigns names starting at
+# HEADLESS-1. We assume HEADLESS_NAME is the one we own; if it already exists
+# we just reapply the rule (idempotent).
+#
+# Env:
+#   HEADLESS_NAME  default: HEADLESS-1
+#   HEADLESS_MODE  default: 1920x1080@60
+#   MIRROR_OUTPUT  default: unset (HEADLESS_NAME is standalone)
+
+set -eu
+
+: "${HEADLESS_NAME:=HEADLESS-1}"
+: "${HEADLESS_MODE:=1920x1080@60}"
+: "${MIRROR_OUTPUT:=}"
+
+have_headless() {
+  hyprctl monitors all -j \
+    | jq -e --arg n "$HEADLESS_NAME" 'any(.[]; .name == $n)' >/dev/null 2>&1
+}
+
+if ! have_headless; then
+  hyprctl output create headless >/dev/null
+  for _ in $(seq 1 30); do
+    have_headless && break
+    sleep 0.2
+  done
+  if ! have_headless; then
+    echo "wayvnc-headless: $HEADLESS_NAME did not appear after hyprctl output create" >&2
+    exit 1
+  fi
+fi
+
+rule="$HEADLESS_NAME, $HEADLESS_MODE, auto, 1"
+if [ -n "$MIRROR_OUTPUT" ]; then
+  rule="$rule, mirror, $MIRROR_OUTPUT"
+fi
+hyprctl keyword monitor "$rule" >/dev/null

@@ -1,0 +1,14 @@
+# Hyprland output name to assign to the headless display. Hyprland
+# auto-names headless outputs starting at HEADLESS-1. Change this only if
+# something else in your session also creates headless outputs.
+HEADLESS_NAME=HEADLESS-1
+
+# Resolution and refresh of the headless output. Choose a sensible default
+# for your VNC viewer's bandwidth; 1080p is a reasonable baseline.
+HEADLESS_MODE=1920x1080@60
+
+# Optional: physical Hyprland output to mirror onto HEADLESS_NAME. When set,
+# the physical display drives the framebuffer at its native resolution and
+# HEADLESS_NAME serves a downscaled copy to wayvnc. Leave unset to make
+# HEADLESS_NAME a standalone output.
+#MIRROR_OUTPUT=DP-5
