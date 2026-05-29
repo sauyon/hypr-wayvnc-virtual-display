@@ -1,40 +1,56 @@
 #!/usr/bin/env bash
 # wayvnc-headless: create or refresh a persistent Hyprland headless output.
 #
-# Hyprland's `hyprctl output create headless` auto-assigns names starting at
-# HEADLESS-1. We assume HEADLESS_NAME is the one we own; if it already exists
-# we just reapply the rule (idempotent).
+# `hyprctl output create headless` auto-assigns names sequentially
+# (HEADLESS-1, HEADLESS-2, ...) and the counter never resets within a
+# session — so we can't assume any particular name in advance. This script
+# detects whichever name Hyprland assigned (or reuses an existing one if a
+# HEADLESS-* output is already present) and writes the result to a state
+# file so wayvnc-output-pin knows what to target.
 #
 # Env:
-#   HEADLESS_NAME  default: HEADLESS-1
 #   HEADLESS_MODE  default: 1920x1080@60
-#   MIRROR_OUTPUT  default: unset (HEADLESS_NAME is standalone)
+#   MIRROR_OUTPUT  default: unset (headless is standalone)
+#
+# State file: $XDG_RUNTIME_DIR/hypr-wayvnc-virtual-display.env
+#   contains: HEADLESS_NAME=HEADLESS-N
 
 set -eu
 
-: "${HEADLESS_NAME:=HEADLESS-1}"
 : "${HEADLESS_MODE:=1920x1080@60}"
 : "${MIRROR_OUTPUT:=}"
 
-have_headless() {
-  hyprctl monitors all -j \
-    | jq -e --arg n "$HEADLESS_NAME" 'any(.[]; .name == $n)' >/dev/null 2>&1
+state_dir="${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}"
+state_file="$state_dir/hypr-wayvnc-virtual-display.env"
+
+list_headless() {
+  hyprctl monitors all -j | jq -r '.[] | select(.name | startswith("HEADLESS-")) | .name'
 }
 
-if ! have_headless; then
+# Prefer reusing an existing HEADLESS-* output (idempotent re-runs, and we
+# don't leak a new one on every service restart).
+name=$(list_headless | head -n1)
+if [ -z "$name" ]; then
+  before=$(list_headless | sort)
   hyprctl output create headless >/dev/null
   for _ in $(seq 1 30); do
-    have_headless && break
+    after=$(list_headless | sort)
+    name=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -n1)
+    [ -n "$name" ] && break
     sleep 0.2
   done
-  if ! have_headless; then
-    echo "wayvnc-headless: $HEADLESS_NAME did not appear after hyprctl output create" >&2
-    exit 1
-  fi
 fi
 
-rule="$HEADLESS_NAME, $HEADLESS_MODE, auto, 1"
+if [ -z "$name" ]; then
+  echo "wayvnc-headless: could not detect a headless output after hyprctl output create" >&2
+  exit 1
+fi
+
+rule="$name, $HEADLESS_MODE, auto, 1"
 if [ -n "$MIRROR_OUTPUT" ]; then
   rule="$rule, mirror, $MIRROR_OUTPUT"
 fi
 hyprctl keyword monitor "$rule" >/dev/null
+
+# Publish the chosen name so wayvnc-output-pin's EnvironmentFile picks it up.
+printf 'HEADLESS_NAME=%s\n' "$name" > "$state_file"

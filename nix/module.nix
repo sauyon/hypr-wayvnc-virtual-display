@@ -13,12 +13,6 @@ in
     };
 
     headless = {
-      name = lib.mkOption {
-        type = lib.types.str;
-        default = "HEADLESS-1";
-        description = "Name of the Hyprland headless output to own and pin wayvnc to.";
-      };
-
       mode = lib.mkOption {
         type = lib.types.str;
         default = "1920x1080@60";
@@ -54,7 +48,6 @@ in
         RemainAfterExit = true;
         Environment =
           [
-            "HEADLESS_NAME=${cfg.headless.name}"
             "HEADLESS_MODE=${cfg.headless.mode}"
           ]
           ++ lib.optional (cfg.headless.mirrorOutput != null)
@@ -70,9 +63,10 @@ in
         PartOf = [ "graphical-session.target" "wayvnc.service" ];
         After = [ "wayvnc.service" "wayvnc-headless.service" ];
         BindsTo = [ "wayvnc.service" ];
+        Requires = [ "wayvnc-headless.service" ];
       };
       Service = {
-        Environment = [ "HEADLESS_NAME=${cfg.headless.name}" ];
+        EnvironmentFile = "-%t/hypr-wayvnc-virtual-display.env";
         ExecStart = "${cfg.package}/bin/wayvnc-output-pin";
         Restart = "on-failure";
         RestartSec = 5;

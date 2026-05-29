@@ -6,6 +6,7 @@ BindsTo=wayvnc.service
 
 [Service]
 EnvironmentFile=-%h/.config/hypr-wayvnc-virtual-display/config
+EnvironmentFile=-%t/hypr-wayvnc-virtual-display.env
 ExecStart=@BINDIR@/wayvnc-output-pin
 Restart=on-failure
 RestartSec=5
