@@ -4,7 +4,6 @@
   makeWrapper,
   bash,
   jq,
-  socat,
 }:
 stdenvNoCC.mkDerivation {
   pname = "hypr-wayvnc-virtual-display";
@@ -26,7 +25,7 @@ stdenvNoCC.mkDerivation {
   postFixup = ''
     for f in $out/bin/*; do
       wrapProgram "$f" \
-        --prefix PATH : ${lib.makeBinPath [ bash jq socat ]}
+        --prefix PATH : ${lib.makeBinPath [ bash jq ]}
     done
   '';
 

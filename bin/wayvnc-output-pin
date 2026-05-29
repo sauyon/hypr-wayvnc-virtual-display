@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# wayvnc-output-pin: keep wayvnc attached and capturing a named Hyprland
-# output across monitor hotplug events.
+# wayvnc-output-pin: keep wayvnc attached and capturing a named output across
+# wl_output churn caused by monitor hotplug or mirror-mode transitions.
 #
-# Hyprland destroys and recreates a monitor's wl_output global whenever it
-# enters or leaves mirror mode. wayvnc tracks outputs by registry id, so it
-# loses its capture target on every mirror transition: it falls back to a
-# wrong output or detaches entirely.
+# wayvnc tracks outputs internally by Wayland registry id but exposes them by
+# name via wayvncctl. When a compositor destroys and recreates an output's
+# wl_output global (Hyprland does this on every mirror-mode transition; other
+# compositors may do it on hotplug or DPMS), wayvnc's selected output
+# vanishes, it tries a fallback, and either captures the wrong output or
+# detaches.
 #
-# This service watches Hyprland's socket2 for monitor add/remove events and
-# re-issues `wayvncctl attach $WAYLAND_DISPLAY` + `output-set $HEADLESS_NAME`
-# after a short debounce, so wayvnc settles back on the intended output.
+# This sidecar listens on wayvnc's own IPC for output-added and detached
+# events and re-runs `wayvncctl attach $WAYLAND_DISPLAY` + `output-set
+# $HEADLESS_NAME` to snap wayvnc back to the intended output. Because the
+# trigger comes from wayvnc itself, the logic is compositor-agnostic — it
+# works with any wlroots-based compositor.
 #
 # Requires wayvnc to be started with `--detached`.
 #
 # Env:
 #   HEADLESS_NAME    default: HEADLESS-1
 #   WAYLAND_DISPLAY  required (inherited from session)
-#   HYPRLAND_INSTANCE_SIGNATURE  required (inherited from session)
-#   XDG_RUNTIME_DIR  required (inherited from session)
 
 set -eu
 
@@ -27,40 +29,48 @@ if [ -z "${WAYLAND_DISPLAY:-}" ]; then
   echo "wayvnc-output-pin: WAYLAND_DISPLAY is not set" >&2
   exit 1
 fi
-if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
-  echo "wayvnc-output-pin: HYPRLAND_INSTANCE_SIGNATURE is not set" >&2
-  exit 1
-fi
 
-pin() {
-  # attach is a no-op (and errors) if wayvnc is already attached; output-set
-  # is what actually re-pins after Hyprland recreates the wl_output global.
-  wayvncctl attach "$WAYLAND_DISPLAY" >/dev/null 2>&1 || true
-  sleep 0.2
-  wayvncctl output-set "$HEADLESS_NAME" >/dev/null 2>&1 || true
+# Attach to the Wayland display and set the captured output. Both steps are
+# retried because either can race the compositor briefly recreating the
+# output. attach errors when already attached; output-set errors when the
+# named output isn't yet visible to wayvnc.
+attach_and_pin() {
+  for _ in $(seq 1 30); do
+    wayvncctl attach "$WAYLAND_DISPLAY" >/dev/null 2>&1 || true
+    sleep 0.2
+    if wayvncctl output-set "$HEADLESS_NAME" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
-# Wait for the wayvnc control socket to appear.
+# Wait for the wayvnc control socket to appear before subscribing.
 for _ in $(seq 1 30); do
   wayvncctl --json get-clients >/dev/null 2>&1 && break
   sleep 1
 done
 
-pin
+attach_and_pin || true
 
-hypr_sock="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
-if [ ! -S "$hypr_sock" ]; then
-  echo "wayvnc-output-pin: Hyprland socket2 not found at $hypr_sock" >&2
-  exit 1
-fi
-
-socat -U - "UNIX-CONNECT:$hypr_sock" | while IFS= read -r evt; do
-  case "$evt" in
-    monitoraddedv2*|monitorremovedv2*)
-      # Debounce: let Hyprland finish recreating the wl_output global before
-      # we re-issue output-set.
-      sleep 0.3
-      pin
+wayvncctl --json event-receive | while IFS= read -r evt; do
+  method=$(printf '%s\n' "$evt" | jq -r '.method // empty')
+  name=$(printf '%s\n' "$evt" | jq -r '.params.name // empty')
+  case "$method" in
+    output-added)
+      if [ "$name" = "$HEADLESS_NAME" ]; then
+        # Small debounce: the wl_output is in wayvnc's registry already (it
+        # fired the event), but the protocol-level capture switch wants the
+        # output to have a current mode and not be mid-creation.
+        sleep 0.2
+        attach_and_pin || true
+      fi
+      ;;
+    detached)
+      # wayvnc lost its Wayland connection entirely (all outputs gone, or the
+      # compositor restarted). Retry until the target output reappears.
+      attach_and_pin || true
       ;;
   esac
 done

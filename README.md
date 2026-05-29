@@ -4,6 +4,11 @@ A persistent headless output for [Hyprland](https://hypr.land) plus a small
 sidecar that keeps [wayvnc](https://github.com/any1/wayvnc) attached to it
 across monitor hotplug events.
 
+The pin sidecar is compositor-agnostic and works with any wlroots-based
+compositor. The headless-creation helper is Hyprland-specific; users on other
+compositors can BYO headless output via their compositor's own config (see
+[Other compositors](#other-compositors)).
+
 ## Problem
 
 Running wayvnc against a Hyprland session has two failure modes that compound:
@@ -31,10 +36,11 @@ Two small pieces:
   a mirror of a physical output so an attached display drives the framebuffer.
 
 - **`wayvnc-output-pin`** — a long-running sidecar that subscribes to
-  Hyprland's `socket2` IPC, and on every `monitoraddedv2` / `monitorremovedv2`
-  event re-issues `wayvncctl attach $WAYLAND_DISPLAY` followed by
-  `wayvncctl output-set $HEADLESS_NAME`. This forces wayvnc back onto the
-  intended output after every mirror-mode transition.
+  wayvnc's own IPC (`wayvncctl event-receive`) and on `output-added`
+  (for the named output) or `detached` events re-issues
+  `wayvncctl attach $WAYLAND_DISPLAY` followed by
+  `wayvncctl output-set $HEADLESS_NAME`. Because the trigger comes from
+  wayvnc itself, this is compositor-agnostic.
 
 You bring your own `wayvnc.service`. The only requirement is that wayvnc is
 started with `--detached` so it survives transient output loss instead of
@@ -42,11 +48,12 @@ exiting.
 
 ## Requirements
 
-- Hyprland (any version supporting `hyprctl output create headless`, mirror
-  rules, and the `monitoraddedv2` / `monitorremovedv2` events on `socket2` —
-  v0.36+)
-- wayvnc 0.9+
-- `bash`, `jq`, `socat`
+- wayvnc 0.9+ (must support `--detached` and the `output-added` / `detached`
+  events on `wayvncctl event-receive`)
+- A wlroots-based compositor (Hyprland, Sway, Wayfire, river, etc.). For
+  the bundled `wayvnc-headless` helper, Hyprland v0.36+ (anything with
+  `hyprctl output create headless` and mirror rules).
+- `bash`, `jq`
 - systemd user instance
 
 ## Install
@@ -143,18 +150,41 @@ Key points:
 When a physical output (say `HDMI-A-1`) connects while `HEADLESS-1` is set to
 mirror it:
 
-1. Hyprland removes `HEADLESS-1`'s `wl_output` global, then adds a fresh one.
-2. wayvnc sees its tracked output disappear, tries `switch_to_prev_output`,
-   and lands on whichever output it sees first — typically not the one you
-   want.
-3. Hyprland emits `monitoraddedv2>>...,HDMI-A-1,...` on `socket2`.
-4. `wayvnc-output-pin` reads the event, sleeps 300ms to let Hyprland settle,
-   and runs `wayvncctl output-set HEADLESS-1`.
+1. Hyprland removes `HEADLESS-1`'s `wl_output` global, then adds a fresh one
+   with a new registry id.
+2. wayvnc sees the registry global it was tracking disappear, tries its
+   `switch_to_prev_output` fallback, and lands on whichever output it sees
+   first — typically not the one you want.
+3. wayvnc then sees the new `wl_output` global appear and emits
+   `output-added` with `params.name == "HEADLESS-1"` on its control socket.
+4. `wayvnc-output-pin` reads the event, debounces 200ms, and runs
+   `wayvncctl attach $WAYLAND_DISPLAY` + `wayvncctl output-set HEADLESS-1`.
 5. wayvnc snaps back to `HEADLESS-1`, which is now the mirror view of the
    newly-connected physical output, so VNC clients keep seeing whatever the
    physical display shows.
 
-Disconnect events follow the same path in reverse.
+Disconnect events follow the same path in reverse. If wayvnc loses all
+outputs and detaches entirely (its `detached` event fires), the same retry
+loop keeps trying `attach` until the headless output reappears.
+
+## Other compositors
+
+The pin sidecar only depends on wayvnc IPC, so it works unchanged on any
+wlroots-based compositor. The bundled `wayvnc-headless` helper is
+Hyprland-specific because every compositor has its own way to create
+runtime outputs:
+
+| Compositor | Headless creation                          | Mirror equivalent                     |
+|------------|--------------------------------------------|---------------------------------------|
+| Hyprland   | `hyprctl output create headless` + `keyword monitor` | `monitor=NAME,...,mirror,SRC`         |
+| Sway       | `swaymsg create_output`                    | external [wl-mirror](https://github.com/Ferdi265/wl-mirror) |
+| Wayfire    | `WLR_BACKENDS=headless` env var at startup | external wl-mirror                    |
+
+For non-Hyprland setups: skip the `wayvnc-headless.service` unit, create
+the headless output via your compositor's own startup mechanism, and let
+`wayvnc-output-pin.service` do its job. Set `HEADLESS_NAME` to whatever
+name your compositor assigned (`HEADLESS-1` is the default for both
+Hyprland and Sway).
 
 ## License
 
