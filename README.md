@@ -1,5 +1,11 @@
 # hypr-wayvnc-virtual-display
 
+> [!WARNING]
+> The initial implementation in this repository was written by Claude (an LLM)
+> and has not yet been reviewed line-by-line by the author. It works for the
+> author's setup but should be treated as unreviewed code: read it before
+> running, and don't expect production-grade guarantees.
+
 A persistent headless output for [Hyprland](https://hypr.land) plus a small
 sidecar that keeps [wayvnc](https://github.com/any1/wayvnc) attached to it
 across monitor hotplug events.
