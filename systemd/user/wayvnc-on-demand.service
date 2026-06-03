@@ -1,0 +1,14 @@
+[Unit]
+Description=On-demand Hyprland headless output for wayvnc
+PartOf=graphical-session.target
+After=graphical-session.target wayvnc.service
+Wants=wayvnc.service
+
+[Service]
+EnvironmentFile=-%h/.config/hypr-wayvnc-virtual-display/config
+ExecStart=@BINDIR@/wayvnc-on-demand
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

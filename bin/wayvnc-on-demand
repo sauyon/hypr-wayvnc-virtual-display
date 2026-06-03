@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# wayvnc-on-demand: bring a Hyprland HEADLESS output up only while wayvnc
+# has at least one connected VNC client; tear it down when the last client
+# disconnects. While a session is active, also re-pins wayvnc's captured
+# output across output churn (hotplug, mirror-mode transitions).
+#
+# Hyprland's `hyprctl output create headless` assigns names sequentially
+# (HEADLESS-1, HEADLESS-2, ...) and never resets within a session, so this
+# script reuses any existing HEADLESS-* output rather than leaking new ones
+# on restart.
+#
+# Requires wayvnc to be started with `--detached` (the daemon stays up
+# between sessions; we attach/detach via wayvncctl).
+#
+# Env:
+#   HEADLESS_MODE     default: 1920x1080@60
+#   WAYLAND_DISPLAY   required (inherited from session)
+#
+# Note: a `MIRROR_OUTPUT` knob was removed deliberately. wayvnc (≥0.11-dev)
+# filters mirrored outputs out of its output-list, so `output-set` against a
+# mirrored HEADLESS fails with "No such output". The on-demand lifecycle
+# already prevents the ghost-workspace problem mirroring was solving (the
+# output only exists while a client is connected, and EXIT/INT/TERM traps
+# tear it down on shutdown).
+#
+# State file: $XDG_RUNTIME_DIR/hypr-wayvnc-virtual-display.env
+#   contains: HEADLESS_NAME=HEADLESS-N (present only while a session is up)
+
+set -eu
+
+: "${HEADLESS_MODE:=1920x1080@60}"
+
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  echo "wayvnc-on-demand: WAYLAND_DISPLAY is not set" >&2
+  exit 1
+fi
+
+state_dir="${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}"
+state_file="$state_dir/hypr-wayvnc-virtual-display.env"
+HEADLESS_NAME=""
+
+list_headless() {
+  hyprctl monitors all -j | jq -r '.[] | select(.name | startswith("HEADLESS-")) | .name'
+}
+
+list_enabled_headless() {
+  hyprctl monitors all -j | jq -r '.[] | select(.name | startswith("HEADLESS-")) | select(.disabled | not) | .name'
+}
+
+bring_up() {
+  local name before after
+  # Always create a fresh HEADLESS rather than reusing a disabled one.
+  # Hyprland's name counter doesn't reset, so reusing the same name when an
+  # output gets disabled-then-re-enabled gives wayvnc a stale wl_output
+  # proxy with the old capabilities; output-set then fails with "No such
+  # output" because wayvnc's cached registry doesn't match the new state.
+  # Burning HEADLESS numbers is the cost; in exchange wayvnc's per-output
+  # state is always fresh.
+  before=$(list_headless | sort)
+  hyprctl output create headless >/dev/null
+  for _ in $(seq 1 30); do
+    after=$(list_headless | sort)
+    name=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -n1)
+    [ -n "$name" ] && break
+    sleep 0.2
+  done
+  if [ -z "$name" ]; then
+    echo "wayvnc-on-demand: failed to create headless output" >&2
+    return 1
+  fi
+  hyprctl keyword monitor "$name, $HEADLESS_MODE, auto, 1" >/dev/null
+  printf 'HEADLESS_NAME=%s\n' "$name" > "$state_file"
+  HEADLESS_NAME=$name
+}
+
+tear_down() {
+  local name
+  # Detach wayvnc first so it doesn't see its captured output yanked while
+  # still attached — wayvnc 0.9.1 is fragile in that case and tends to
+  # SIGABRT on subsequent wl_output dispatch.
+  wayvncctl detach >/dev/null 2>&1 || true
+  # Disable every enabled HEADLESS-* output we find, not just the one we
+  # currently track. This covers the daemon-startup case where a previous
+  # persistent setup left orphans behind.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    hyprctl keyword monitor "$name, disable" >/dev/null 2>&1 || true
+  done < <(list_enabled_headless)
+  rm -f "$state_file"
+  HEADLESS_NAME=""
+}
+
+attach_and_pin() {
+  # Short retry budget on purpose: this runs from the event loop, and a
+  # long blocking retry would bury the next event (including the
+  # client-disconnected we need to trigger tear_down). 5 tries × 0.5s ≈ 2.5s
+  # is enough for wayvnc to see a freshly-created HEADLESS output via the
+  # wl_registry, and not long enough to backlog real events.
+  for _ in $(seq 1 5); do
+    wayvncctl attach "$WAYLAND_DISPLAY" >/dev/null 2>&1 || true
+    if [ -n "$HEADLESS_NAME" ] && wayvncctl output-set "$HEADLESS_NAME" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+# Don't leak the headless output if the service stops or the process dies.
+cleanup() { tear_down; }
+trap cleanup EXIT INT TERM
+
+# Reconcile initial state. The invariant we want to enforce: a HEADLESS
+# output exists iff at least one VNC client is connected. If the daemon
+# restarted mid-session, bring it up; if a previous run leaked an output
+# (or a persistent-mode predecessor left one behind), tear it down.
+initial=0
+if wayvncctl --json client-list >/dev/null 2>&1; then
+  initial=$(wayvncctl --json client-list | jq 'length' 2>/dev/null || echo 0)
+fi
+if [ "$initial" -gt 0 ]; then
+  bring_up && attach_and_pin || true
+else
+  tear_down
+fi
+
+reconcile() {
+  local n
+  n=$(wayvncctl --json client-list 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+  if [ "$n" -gt 0 ]; then
+    bring_up && attach_and_pin || true
+  else
+    tear_down
+  fi
+}
+
+while IFS= read -r evt; do
+  method=$(printf '%s\n' "$evt" | jq -r '.method // empty')
+  case "$method" in
+    wayvnc-startup)
+      # wayvnc (re)started, possibly after a crash. Our tracked HEADLESS
+      # state may be out of sync with reality; re-reconcile from client-list.
+      reconcile
+      ;;
+    client-connected)
+      count=$(printf '%s\n' "$evt" | jq -r '.params.connection_count // 0')
+      if [ "$count" = "1" ]; then
+        bring_up && attach_and_pin || true
+      fi
+      ;;
+    client-disconnected)
+      count=$(printf '%s\n' "$evt" | jq -r '.params.connection_count // 0')
+      if [ "$count" = "0" ]; then
+        tear_down
+      fi
+      ;;
+    output-added)
+      # If our headless output reappears during an active session (compositor
+      # restart, mirror toggle), re-pin.
+      name=$(printf '%s\n' "$evt" | jq -r '.params.name // empty')
+      if [ -n "$HEADLESS_NAME" ] && [ "$name" = "$HEADLESS_NAME" ]; then
+        sleep 0.2
+        attach_and_pin || true
+      fi
+      ;;
+    detached)
+      # wayvnc lost its Wayland attachment. If a session is active, re-pin.
+      if [ -n "$HEADLESS_NAME" ]; then
+        attach_and_pin || true
+      fi
+      ;;
+  esac
+done < <(wayvncctl --wait --reconnect --json event-receive)

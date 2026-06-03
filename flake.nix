@@ -1,5 +1,5 @@
 {
-  description = "Persistent Hyprland headless output and wayvnc output pinning across monitor hotplug";
+  description = "On-demand Hyprland headless output for wayvnc, lifecycled by client connect/disconnect";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

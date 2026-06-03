@@ -30,10 +30,10 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = with lib; {
-    description = "Persistent Hyprland headless output and wayvnc output pinning across monitor hotplug";
+    description = "On-demand Hyprland headless output for wayvnc, lifecycled by client connect/disconnect";
     homepage = "https://github.com/sauyon/hypr-wayvnc-virtual-display";
     license = licenses.mit;
     platforms = platforms.linux;
-    mainProgram = "wayvnc-headless";
+    mainProgram = "wayvnc-on-demand";
   };
 }

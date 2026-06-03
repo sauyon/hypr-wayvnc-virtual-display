@@ -1,17 +1,3 @@
 # Resolution and refresh of the headless output. Choose a sensible default
 # for your VNC viewer's bandwidth; 1080p is a reasonable baseline.
 HEADLESS_MODE=1920x1080@60
-
-# Optional: physical Hyprland output to mirror onto the headless output.
-# When set, the physical display drives the framebuffer at its native
-# resolution and the headless output serves a downscaled copy to wayvnc.
-# Leave unset to keep the headless output standalone.
-#MIRROR_OUTPUT=DP-5
-
-# Override the headless output name. Normally you do NOT set this:
-# wayvnc-headless detects the name Hyprland assigned and publishes it to
-# wayvnc-output-pin via $XDG_RUNTIME_DIR/hypr-wayvnc-virtual-display.env.
-# Set this only if you create the headless output yourself (e.g. on sway
-# via `swaymsg create_output` in your config) and want to override the
-# default HEADLESS-1 that wayvnc-output-pin would otherwise look for.
-#HEADLESS_NAME=HEADLESS-1

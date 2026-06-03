@@ -2,8 +2,8 @@ PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 SYSTEMD_USER_DIR := $(PREFIX)/lib/systemd/user
 
-SCRIPTS := wayvnc-headless wayvnc-output-pin
-UNITS := wayvnc-headless.service wayvnc-output-pin.service
+SCRIPTS := wayvnc-on-demand
+UNITS := wayvnc-on-demand.service
 
 .PHONY: install uninstall check
 
